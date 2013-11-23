@@ -1,12 +1,11 @@
 "use strict";
-var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serverObjectId){
+var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serverObjectId, url){
 
 	//package
 	var external = fw.addSubPackage('external');
-	
 	//constants
-	var REQUEST_TIMEOUT = 30 * 1000;    //request timeout config
-	
+	var REQUEST_TIMEOUT = 6 * 1000;    //request timeout config
+	var urlParser = fw.IS_SUMERU_SERVER && url;
 	//data managers
 	var remoteDataMgr = {};		//fetched and dev resolved data manager from external server
 	var localDataMgr = {};		//executed data manager by sumeru
@@ -138,12 +137,14 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 		getRequest.on('error', function(err){
 			fw.log("Error when do external fetch", url);
 			errorHandler && errorHandler(err);
+			cb([]);
 		});
 		
 		//timeout handler
 		getRequest.setTimeout( REQUEST_TIMEOUT, function(info){
 			fw.log("Timeout when do external fetch", url);
 			timeoutHandler && timeoutHandler();
+			cb([]);
 		});
 		
 	}
@@ -203,27 +204,31 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 		
 		//error handler
 		postRequest.on('error', function(err){
-			fw.log("Error when do external post", url);
+			fw.log("Error when do external post");
+			options && postData && fw.log(options, postData);
 			errorHandler && errorHandler(err);
+			cb([]);
 		});
 		
 		//timeout handler
 		postRequest.setTimeout( REQUEST_TIMEOUT, function(){
-			fw.log("Timeout when do external post", url);
+			fw.log("Timeout when do external post");
+			options && postData && fw.log(options, postData);
 			timeoutHandler && timeoutHandler();
+			cb([]);
 		});
 		
 	}
 
 	//在各种post成功后，更新本地数据
-	function _updateLocalData(modelName, pubName, url, type, data){
+	/* function _updateLocalData(modelName, pubName, url, type, data){
 
 		var localData = localDataMgr[url];
 
 		if(type === 'insert'){
 			var struct = fw.server_model.getModelTemp(modelName);
 			var newItem = fw.utils.deepClone(struct);
-			for(p in newItem){
+			for(var p in newItem){
 				newItem[p] = data[p];
 			}
 			newItem.smr_id = data.smr_id;
@@ -234,7 +239,7 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 			//抓取回来以后会自动update, 这里不用做localUpdate
 		}
 
-	}
+	} */
 	
 	/**
 	 * @method _resolve: resolve fetched originData to Array. 处理抓取的原始数据
@@ -242,13 +247,22 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 	 * @param {String} pubName : publish name
 	 * @return {Array} return the resolved data
 	 */
-	function _resolve(originData, pubName){
+	function _resolve(originData, pubName, url){
 		var config = externalConfig[pubName];
 		var data = config.buffer ? originData : originData.toString();
-		if(!config.resolve){ throw new Error('Need function resolve for external fetch!');} //强制有resolve函数
-		var remoteData = config.resolve(data);
-		remoteData = Array.isArray(remoteData) ? remoteData : [remoteData];
-		return remoteData;
+		if(!config.resolve){ //强制有resolve函数
+			fw.log('Need resolve method for external fetch!');
+			return;
+		} 
+		try{
+			var remoteData = config.resolve(data);
+			remoteData = Array.isArray(remoteData) ? remoteData : [remoteData];
+			return remoteData;
+		}catch(e){
+			fw.log("Please check fetch url, 3rd-party server encounters an error: ", url, "\n" ,data, "\n");
+			return ;
+		}
+		
 	}
 	
 	/**
@@ -265,31 +279,34 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 		var remoteData = remoteDataMgr[url];
 		var ret = new LocalData();
 
-		remoteData.forEach(function(item){
+		if(remoteData){
+			remoteData.forEach(function(item){
 			
-			var newItem = fw.utils.deepClone(struct);
-			for(p in newItem){
-				newItem[p] = item[p];
-			}
+				var newItem = fw.utils.deepClone(struct);
+				for(var p in newItem){
+					newItem[p] = item[p];
+				}
 
-			var unique = config.uniqueColumn || config.keyColume;
-			var oldItem = null;
+				var unique = config.uniqueColumn || config.keyColume;
+				var oldItem = null;
 
-			if(unique){
-				oldItem = localDataMgr[url] && localDataMgr[url].findOne(unique, newItem[unique]);
-			}
-			
-			if(oldItem){
-				newItem.smr_id = oldItem.smr_id;
-			}else{
-				newItem.smr_id = serverObjectId.ObjectId();
-			}
-			ret.insert(newItem);
-			
-		});
+				if(unique){
+					oldItem = localDataMgr[url] && localDataMgr[url].findOne(unique, newItem[unique]);
+				}
+				
+				if(oldItem){
+					newItem.smr_id = oldItem.smr_id;
+				}else{
+					newItem.smr_id = serverObjectId.ObjectId();
+				}
+				ret.insert(newItem);
+				
+			});
 
-		localDataMgr[url] = null;
-		
+			localDataMgr[url] = null;
+
+		}
+
 		return ret;
 
 	}
@@ -299,27 +316,72 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 	 * @param {String} modelName : name of model
 	 * @param {String} pubName : publish name
 	 * @param {String} url : external data source url
+	 * @param {Function} callback : publish callback
+	 * @param {Function} afterSync : after _doGet response from 3rd-party server.
 	 */
-	function _sync(modelName, pubName, url, callback){
-		_doGet(url, function(data){
+	function _sync(modelName, pubName, url, callback, afterSync){
+
+		var config = externalConfig[pubName];
+		var method = config.method || "get";
+
+		var _doSync = function(data){
 
 			if(typeof remoteDataMgr[url] === "undefined"){ var firstFetch = true; }	//首次抓取不必trigger_push
-			var remoteData = _resolve(data, pubName);	//处理原始数据
+			var remoteData = _resolve(data, pubName, url);	//处理原始数据
 			if(firstFetch){
 				remoteDataMgr[url] = remoteData;
 				localDataMgr[url] = _process(modelName, pubName, url);
 				var dataArray = fw.utils.deepClone(localDataMgr[url].getData());
 				callback(dataArray);
 			}else{
-				var diff = findDiff(remoteData, remoteDataMgr[url], modelName);	//这里可以不需要Diff工具，直接stringify对比
-				if(diff.length){
+				var diff = (JSON.stringify(remoteData) === JSON.stringify(remoteDataMgr[url])); //这里可以不需要Diff工具，直接stringify对比
+				if(!diff && remoteData){
 					remoteDataMgr[url] = remoteData;
 					localDataMgr[url] = _process(modelName, pubName, url);
 					fw.netMessage.sendLocalMessage({modelName : modelName}, 'trigger_push');
 				}
 			}
 
-		});
+			afterSync && afterSync();
+		}
+
+		if(method.toLowerCase() === "post"){
+
+			var postData = encodeURIComponent(config.postData); 	//args为postData
+			try{
+				var postOptions = urlParser && urlParser.parse(url);
+			}catch(e){
+				return fw.log("externalConfig: fetchUrl must return a url \n\n", url);
+			}
+			
+			if(!postOptions.hostname || !postOptions.pathname){
+				return fw.log('unexpected post url', url);
+			}
+
+			var opts = {
+				hostname : postOptions.hostname,
+				path : postOptions.pathname,
+				port : postOptions.port || 80,
+				method : 'POST',
+				headers: {
+			        'Content-Type': 'application/x-www-form-urlencoded',
+			        'Content-Length': postData.length
+			    }
+			};
+			try{
+				_doPost(opts, postData, _doSync);
+			}catch(e){
+				fw.log("Fetch by post request failed", e);
+				return;
+			}
+		}else{
+			try{
+				_doGet(url, _doSync);	
+			}catch(e){
+				fw.log("Fetch by get request failed", e);
+			}
+		}
+
 	}
 
 
@@ -381,7 +443,7 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 		
 		var suffix = 'Url';
 		var opts;
-
+		args = args.concat();	//copy args
 		if(config.postUrl){
 			Array.prototype.unshift.call(args, type);
 			opts = config.postUrl.apply(null, args);
@@ -411,7 +473,8 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 				    }
 				};
 
-				var opts = fw.utils.merge( pack.options, defaultOptions);
+				var opts = Library.objUtils.extend(true, defaultOptions, pack.options);
+				//var opts = fw.utils.merge( pack.options, defaultOptions);
 
 		        _doPost(opts, postData, function(data){
 		        	fw.netMessage.sendMessage(data.toString(),cbn,conn._sumeru_socket_id);
@@ -436,7 +499,37 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 		        	data = buffer ? data : data.toString();
 		        	fw.netMessage.sendMessage(data,cbn,conn._sumeru_socket_id);
 		        });
+	        }
+	    }
+	});
+
+	//receiver of sumeru.external.sync
+	fw.netMessage.setReceiver({
+	    onMessage : {
+	        target : "SEND_SYNC_REQUEST",
+	        overwrite: true,
+	        handle : function(pack,target,conn) {
+	            var cbn = pack.cbn;
+	            var modelName = pack.modelName;
+	            var pubName = pack.pubName;
+	            var url = pack.url;
+
+	            var urls = urlMgr[modelName];
+	            var config = externalConfig[pubName];
 	            
+	            if(!urls || !config){
+	            	fw.netMessage.sendMessage({msg:"unknown modelName or pubName"},cbn,conn._sumeru_socket_id);
+	            	return false;
+	            }
+
+	            if(urls.indexOf(url) < 0){
+	            	fw.netMessage.sendMessage({msg:"unknown url"},cbn,conn._sumeru_socket_id);
+	            	return false;
+	            }
+
+	            _sync(modelName, pubName, url, function(){}, function(){
+	            	fw.netMessage.sendMessage({msg:"ok"},cbn,conn._sumeru_socket_id);
+	            });
 	            
 	        }
 	    }
@@ -454,16 +547,21 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 	function externalFetch(modelName, pubName, args, callback){
 
 		var config = externalConfig[pubName];
-		var url = (config.fetchUrl && config.fetchUrl.apply(null, args)) || config.geturl(args); //兼容老的geturl方法
+		var method = config.method || "get";
+		var url;
+		if(method.toLowerCase() === "post"){
+			url = (config.fetchUrl && config.fetchUrl.apply(null, args));
+			config.postData = args[args.length - 1] || ""; //规定最后一个参数为postdata
+		}else{
+			url = (config.fetchUrl && config.fetchUrl.apply(null, args)) || config.geturl(args); //兼容老的geturl方法	
+		}
 		
 		//分modelName存下每一个做过external.fetch的url
-		if(!urlMgr[modelName]){ urlMgr[modelName] = [];}
+		if(!urlMgr[modelName]){ urlMgr[modelName] = []; }
 		if(urlMgr[modelName].indexOf(url) < 0){
 			urlMgr[modelName].push(url);
 		}
 		
-		//有本地数据,直接返回本地数据
-		//无本地数据,抓取后trigger_push
 		var localData = localDataMgr[url];
 		if(localData){
 			var dataArray = fw.utils.deepClone(localData.getData());  //生成一个对象，否则本地update导致数据同步异常
@@ -474,7 +572,7 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 
 		if(config.fetchInterval && !fetchTimer[url]){
 			fetchTimer[url] = setInterval(function(){
-				_sync(modelName, pubName, url, callback);	
+				_sync(modelName, pubName, url, callback);
 			}, config.fetchInterval);
 		}
 		
@@ -490,10 +588,11 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 	 * @param {Object} data: delta value generated by sumeru.
 	 * @param {ArrayLike} args: subscribe arguments.
 	 */
-	function externalPost(modelName, pubName, type, smrdata, args){
+	function externalPost(modelName, pubName, type, smrdata, args, postCallback){
 		
 		//generate postData and options by developers' config.
 		var config = externalConfig[pubName];
+		args = args.concat();	//copy args
 		Array.prototype.pop.call(args); //remove callback
 		var d = _getPostData(config, type, smrdata, modelName, pubName),
 			opt = _getPostOptions(config, type, args);
@@ -501,7 +600,6 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 		if(!(d && opt)){return false;}	//post config error, stop post
 
 		var postData = encodeURIComponent(JSON.stringify(d)); //final postData
-
 		var defaultOptions = {
 			method : 'POST',
 			headers: {
@@ -510,14 +608,17 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 		    }
 		};
 
-		var opts = fw.utils.merge( opt, defaultOptions);    //final options
+		var opts = Library.objUtils.extend(true, defaultOptions, opt); //final options
 
 		_doPost(opts, postData, function(data){
 		 	//成功的情况下，重新拉取数据
 			urlMgr[modelName].forEach(function(refetchurl){
-				_updateLocalData(modelName, pubName, refetchurl, type, smrdata);
+				//_updateLocalData(modelName, pubName, refetchurl, type, smrdata);
 				_sync(modelName, pubName, refetchurl, function(){});		//POST完成后重新抓取三方数据,trigger_push不用主动callback	
 			});
+
+			postCallback();
+
 		});
 		
 	}
@@ -531,26 +632,33 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 	 * @param {Function} cb: get callback, result for getData;
 	 */
 	function sendGetRequest(url, cb, buffer){
+		//server
+		if(fw.IS_SUMERU_SERVER){
+			_doGet(url, function(data){
+	        	data = buffer ? data : data.toString();
+	        	cb(data);
+	        });
+		} else { //client
+			if(!url || !cb){ fw.log('Please specify url and callback for sumeru.external.get!');}
+			var cbn = "WAITING_EXTERNAL_GET_CALLBACK_" + fw.utils.randomStr(8);
 
-		if(!url || !cb){ fw.log('Please specify url and callback for sumeru.external.get!');}
-		var cbn = "WAITING_EXTERNAL_GET_CALLBACK_" + fw.utils.randomStr(8);
+			fw.netMessage.setReceiver({
+		        onMessage : {
+		            target : cbn,
+		            overwrite: true,
+		            once:true,
+		            handle : function(data){
+		            	cb(data);
+		            }
+		        }
+		    });
 
-		fw.netMessage.setReceiver({
-	        onMessage : {
-	            target : cbn,
-	            overwrite: true,
-	            once:true,
-	            handle : function(data){
-	            	cb(data);
-	            }
-	        }
-	    });
-
-		fw.netMessage.sendMessage({
-	        cbn : cbn,
-	        url : url,
-	        buffer : buffer
-	    }, "SEND_EXTERNAL_GET");
+			fw.netMessage.sendMessage({
+		        cbn : cbn,
+		        url : url,
+		        buffer : buffer
+		    }, "SEND_EXTERNAL_GET");
+		}
 	    
 	}
 	
@@ -563,28 +671,94 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 	 * @param {Function} cb: post callback, result for;
 	 */
 	function sendPostRequest(options, postData, cb){
+		//server
+		if(fw.IS_SUMERU_SERVER){
+            postData = encodeURIComponent(JSON.stringify(postData));
+            var defaultOptions = {
+				method : 'POST',
+				headers: {
+			        'Content-Type': 'application/x-www-form-urlencoded',
+			        'Content-Length': postData.length
+			    }
+			};
 
-		if(!options || !postData){fw.log("please specify options or postData for sumeru.external.post");return false;}
-		cb = cb || function(){};
+			var opts = Library.objUtils.extend(true, defaultOptions, options);
 
-		var cbn = "WAITING_EXTERNAL_POST_CALLBACK_" + fw.utils.randomStr(8);
+	        _doPost(opts, postData, function(data){
+	        	cb(data);
+	        });
 
-		fw.netMessage.setReceiver({
-	        onMessage : {
-	            target : cbn,
-	            overwrite: true,
-	            once:true,
-	            handle : function(data){
-	            	cb(data);
-	            }
-	        }
-	    });
+		} else { //client
+			if(!options || !postData){fw.log("please specify options or postData for sumeru.external.post");return false;}
+			cb = cb || function(){};
 
-		fw.netMessage.sendMessage({
-	        cbn : cbn,
-	        options : options,
-	        postData : postData
-	    }, "SEND_EXTERNAL_POST");
+			var cbn = "WAITING_EXTERNAL_POST_CALLBACK_" + fw.utils.randomStr(8);
+
+			fw.netMessage.setReceiver({
+		        onMessage : {
+		            target : cbn,
+		            overwrite: true,
+		            once:true,
+		            handle : function(data){
+		            	cb(data);
+		            }
+		        }
+		    });
+
+			fw.netMessage.sendMessage({
+		        cbn : cbn,
+		        options : options,
+		        postData : postData
+		    }, "SEND_EXTERNAL_POST");
+		}
+
+	}
+
+	/**
+	 * package: external
+	 * method name: sync
+	 * description : mandatory sync existed remote data
+	 * @param {String} modelName: sync modelName
+	 * @param {String} pubName: sync pubName.
+	 * @param {String} url: sync url.
+	 * @param {Function} cb: sync callback, result for;
+	 */
+	function synchronize(modelName, pubName, url, cb){
+
+		if(fw.IS_SUMERU_SERVER){
+            var urls = urlMgr[modelName];
+            var config = externalConfig[pubName];
+
+            _sync(modelName, pubName, url, function(){}, function(){
+            	cb({msg:"ok"});
+            });
+		} else { //client
+			if(arguments.length < 3){
+				fw.log("please sepecify modelName, pubName and url in order.");
+				return false;
+			}
+
+			var cbn = "WAITING_SYNC_CALLBACK_" + fw.utils.randomStr(8);
+
+			fw.netMessage.setReceiver({
+		        onMessage : {
+		            target : cbn,
+		            overwrite: true,
+		            once:true,
+		            handle : function(data){
+		            	cb && cb(data);
+		            }
+		        }
+		    });
+
+			fw.netMessage.sendMessage({
+		        cbn : cbn,
+		        modelName : modelName,
+		        pubName : pubName,
+		        url : url
+		    }, "SEND_SYNC_REQUEST");
+		}
+		
 
 	}
 	
@@ -592,6 +766,7 @@ var runnable = function(fw, findDiff, publishBaseDir, externalConfig, http, serv
 	external.__reg('doPost', externalPost, 'private');		//external.post
 	external.__reg('get', sendGetRequest);
 	external.__reg('post', sendPostRequest);
+	external.__reg('sync', synchronize);
 	
 }
 

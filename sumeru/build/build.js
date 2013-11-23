@@ -14,8 +14,10 @@ require(__dirname + '/../src/log.js')(sumeru);
 /**BAE环境模拟测试用**/
 //process.BAE = 'bae';
 
+var appDir;
 if (typeof process.BAE !== 'undefined'){
     sumeru.dev('BAE MODE');
+    appDir = path.join(__dirname, '/../../app');
     
     dstDir = path.join(baseDir, '/__bae__');
     var serverDir = path.join(dstDir, '/server');
@@ -28,16 +30,23 @@ if (typeof process.BAE !== 'undefined'){
     !fs.existsSync(tmpDir) && fs.mkdirSync(tmpDir);
     !fs.existsSync(binDir) && fs.mkdirSync(binDir);
     !fs.existsSync(staticDir) && fs.mkdirSync(staticDir);
+    
+
 }else{
     sumeru.dev('NON BAE MODE');
-    dstDir = path.join(__dirname, '/../../app' + (process.argv[2] ? '/' +process.argv[2] : ''));
-}
+    appDir = path.join(__dirname, '/../../app' + (process.argv[2] ? '/' +process.argv[2] : ''));
+    dstDir = appDir;//path.join(__dirname, '/../../app' + (process.argv[2] ? '/' +process.argv[2] : ''));
     
-sumeru.dev('build from :' + baseDir);
-sumeru.dev('to :' + dstDir);
+}
+
+process.appDir = appDir;
 
 process.baseDir = baseDir;
 process.dstDir = dstDir;
+
+sumeru.dev('build from :' + baseDir);
+sumeru.dev('to :' + dstDir);
+
 
 if (baseDir.charAt(baseDir.length-1) == '/'){
     //去掉尾部的'/'
@@ -271,7 +280,7 @@ var copySumeruFile2AppBin = function(){
             buildAppResource(dir, theBinDir);
         }
     });
-}
+};
 
 copySumeruFile2AppBin();
 

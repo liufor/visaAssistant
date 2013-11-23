@@ -75,33 +75,33 @@ var SUMERU_ROUTER = SUMERU_ROUTER === undefined ? true : SUMERU_ROUTER;
         
         var iParts = fw.uri.getInstance(urlHash);//更新path，更新controller
         //session 要体现在url中
-        fw.dev("redirect....",iParts.controller);
-        var other = fw.session.getSessionByController(iParts.controller);
-        var hash = "";
+        fw.dev("redirect....",iParts.controller,urlHash);
+        // var other = fw.session.getSessionByController(iParts.controller);
+        // var hash = "";
         isforce = !!_isforce;
-        
-        if ( typeof iParts.params === 'object' && !Library.objUtils.isEmpty(iParts.params) ) {
-        	var objstring="?";
-        	if (other){
-        		if (typeof other == 'string'){
-        			other = JSON.parse(other);
-        		}
-    			for( var t in other){
-        			if (!iParts.params[t]) {//从session中提取url中没有的参数
-    					objstring = objstring + t +"="+other[t]+"&" 
-        				
-        			}else if (iParts.params[t] != other[t]){
-        				isforce = true;
-        			}
-        			
-        		}
-        	}
-        	hash = objstring + objToUrl(iParts.params);
-        }
-        if (typeof type =='string' &&type=='replace'){
-        	History.replaceState(lastSession, document.title, uriParts.path+iParts.controller + hash);
+//         
+        // if ( typeof iParts.params === 'object' && !Library.objUtils.isEmpty(iParts.params) ) {
+        	// var objstring="?";
+        	// if (other){
+        		// if (typeof other == 'string'){
+        			// other = JSON.parse(other);
+        		// }
+    			// for( var t in other){
+        			// if (!iParts.params[t]) {//从session中提取url中没有的参数
+    					// objstring = objstring + t +"="+other[t]+"&";
+//         				
+        			// }else if (iParts.params[t] != other[t]){
+        				// isforce = true;
+        			// }
+//         			
+        		// }
+        	// }
+        	// hash = objstring + objToUrl(iParts.params);
+        // }
+        if (typeof type =='string' && type=='replace'){
+        	History.replaceState(lastSession, document.title, uriParts.path + urlHash);
         }else{
-        	History.pushState(lastSession, document.title, uriParts.path+iParts.controller + hash);
+        	History.pushState(lastSession, document.title, uriParts.path + urlHash);
         }
 		
     });
@@ -127,13 +127,9 @@ var SUMERU_ROUTER = SUMERU_ROUTER === undefined ? true : SUMERU_ROUTER;
         isControllerChange = uriParts.controller != lastController;
         lastController = uriParts.controller;
 
-        fw.dev('isControllerChange :' + isControllerChange);
-        fw.dev('isSessionChange :' + isSessionChange);
-        fw.dev('parts of hash:' , uriParts);
-        
-        // 如果session序列化发生变化,并用不是内部拼接的(理论上此时应只有复制url产生),将变化的对像合并入session工厂.
+        // 如果session序列化发生变化,或者controller变化，则将从url恢复到session中，但不需要触发commit
         if(isSessionChange || isControllerChange){
-            fw.session.setResume(lastSession,lastController);
+            fw.session.preResume(lastSession,lastController);
         }
         
         if(isIgnore == false && (isControllerChange || isParamsChange)){

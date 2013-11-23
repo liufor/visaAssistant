@@ -3,13 +3,15 @@ var globalConfig = function(fw){
     var httpServerPort = 8080;
     var whiteList = ['websocket', 'xdr-streaming', 'xhr-streaming', 'iframe-eventsource', 'iframe-htmlfile', 'xdr-polling', 'xhr-polling', 'iframe-xhr-polling', 'jsonp-polling'];	
     var view_from_cache = false;
+    
     // BAE CONFIG    
-    if (typeof process !== 'undefined' && typeof process.BAE !== 'undefined'){
+    if (fw.BAE_VERSION > 0){
         httpServerPort = 0;
         whiteList = ['xhr-streaming'];
         view_from_cache = true;
     }
-   
+    //
+    
     fw.config.defineModule('cluster');
     fw.config.cluster({
         enable : true,
@@ -41,11 +43,12 @@ var globalConfig = function(fw){
     	fw.config({
     	    configPath : configPath,
     	});
+    	
     }
     
     var viewConfig = fw.config.defineModule('view');
     viewConfig({path : '/'});
-}
+};
 //for node
 if(typeof module !='undefined' && module.exports){
     module.exports = globalConfig;
